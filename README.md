@@ -1,2 +1,2 @@
 # books
-Those books' source code I've learned.
+Those books' source codes and notes I've learned.
