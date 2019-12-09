@@ -179,13 +179,9 @@ func main() {
   > - Using a recursive function call that fills the stack(stack overflow)
 
 - Panic should be used for errors that are not recoverable, which is why errors are just values in Go. Recovering a panic should be just an attempt to do something with that error before exiting the application. If an unexpected problem occurs, it's because it hasn't been handled correctly or some checks are missing. This represents a serious issue that needs to be dealt with, and the program need to change, which is why it should be intercepted and dismissed.  
-
 - Concurrency is so central to Go that two of its fundamental tools are just keywords —— `chan` and `go`. This is a very clever way of hiding the complexity of a well-designed and implemented concurrency model that is easy to use and understand.
-
 - A channel is made for sharing data, and it usually connects two or more execution threads in an application, which makes it possible to send and receive data without worrying about data safety, Go has a lightweight implementation of a thread that is managed by the runtime instead of the operating system, and the best way to make them communicate is through the use of channels.
-
 - Creating a new goroutine is pretty easy —— you just need to use the `go` operator, followed by a function execution. This includes method calls and closures. If the function has any arguments, they will be evaluated before the routine starts. Once it starts, there is no guarantee that changes to variables from an outer scope will be synchronized if you don't use channels.
-
 - **Stack and heap**
   - Memory is arranged into two main areas —— stack and heap. There is a stack for the application entry point function(`main`), and additional stacks are created with each goroutine, which are stored in the heap. The **stack** is, as its name suggests, a memory portion that grows with each function call, and shrinks when the function returns. The **heap** is made of a series of regions of memory that are dynamically allocated, and their lifetime is not defined a priori as the items in the stack,; heap space can be allocated and freed at any time.
   - All the variables that outlive the function where they are defined are stored in the heap, such as a returned pointer. The compiler uses a process called **escape analysis** to check which variables go on the heap. This can be verified with the `go tool compile -m` command.
@@ -231,4 +227,269 @@ func main() {
   The GC is responsible for freeing the areas of the heap that are not referenced in any stack.
 
 ## ch4
+
+- Go offers a series of functions that make it possible to manipulate file paths that are paltform-independent and that are contained mainly in the `path/filepath` and `os` packages.
+- An example of the list and count files is shown in the following code:
+
+```go
+func main() {
+  if len(os.Args) != 2 { // ensure path is specified
+    fmt.Println("Please specify a path.")
+    return
+  }
+  root, err := filepath.Abs(os.Args[1]) // get absolute path
+  if err != nil {
+    fmt.Println("cannot get absolute path:", err)
+    return
+  }
+  fmt.Println("Listing files in", root)
+
+  var c struct {
+    files int
+    dirs  int
+  }
+  
+  filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+    // walk the tree to count files and folders
+    if info.IsDir() {
+      c.dirs++
+    } else {
+      c.files++
+    }
+  })
+  fmt.Println("-", path)
+  fmt.Printf("Total: %d files in %d directories", c.files, c.dirs)
+}
+```
+
+- Getting the contents of a file can be done with an auxiliary function in the `io/ioutil` package, as well as with the `ReadFile` function, which opens, reads, and closes the file at once. This uses a small buffer (512 bytes) and loads the whole content in memory. This is not a good idea if the file size is very large, unknown, or if the content of the file can be processed one part at a time.
+- An example of reading all the content at once is shown in the following code:
+
+```go
+func main() {
+  if len(os.Args) != 2 {
+    fmt.Println("Please specify a path.")
+    return
+  }
+  b, err := ioutil.ReadFile(os.Args[1])
+  if err != nil {
+    fmt.Println("Error:", err)
+  }
+  fmt.Println(string(b))
+}
+```
+
+- For all operations that read from a disk, there's an interface that is paramount:
+  - A reader makes it possible to process data in chunks (the size is determined bu the slice), and if the same slice is reused for the operations that follow, the resulting program is consistently more memory efficient because it is using the same limited part of the memory that allocates the slice.
+
+```go
+type Reader interface {
+  Read(p []byte) (n int, err error)
+}
+```
+
+- A **data buffer**, or just a buffer, is a part of memory that is used to store temporary data while it is moved. Byte buffers are implemented in the `bytes` package, and they are implemented by an underlying slice that is capable of growing every time the amount of data that needs to be stored will not fit.
+- If new buffers get allocated each time, the old ones will eventually be cleaned up by the GC itself, which is not an optimal solution. It's always better to reuse buffers instead of allocating the new ones. This is because they make it possible to reset the slice while keeping the capacity as it is (the array doesn't get cleared or collected by the GC).
+- A buffer also offers two functions to show its underlying length and capacity. In the following example, we can see how to reuse a buffer with `Buffer.Reset` and how to keep track of its capacity.
+- An example of buffer reuse and its underlying capacity is shown in the following code:
+
+```go
+func main() {
+    var b = bytes.NewBuffer(make([]byte, 26))
+    var texts = []string{
+        `As he came into the window`,
+        `It was the sound of a crescendo
+He came into her apartment`,
+        `He left the bloodstains on the carpet`,
+        `She ran underneath the table
+He could see she was unable
+So she ran into the bedroom
+She was struck down, it was her doom`,
+    }
+    for i := range texts {
+        b.Reset()
+        b.WriteString(texts[i])
+        fmt.Println("Length:", b.Len(), "\tCapacity:", b.Cap())
+    }
+}
+```
+
+- There are two other interfaces that are related to readers: `io.Closer` and `io.Seeker`:
+
+```go
+type Closer interface {
+  CLose() error
+}
+
+type Seeker interface {
+  Seek(offet int64, whence int) (int64, error)
+}
+```
+
+These are usually combined with `io.Reader`, and the resulting interfaces are as follows:
+
+```go
+type ReadCloser interface {
+  Reader
+  Closer
+}
+
+type ReadSeeker interface {
+  Reader
+  Seeker
+}
+```
+
+The `Close` method ensures that the resource gets released and avoid leaks, while the `Seek` method makes it possible to move the cursor of the current object (for example, a `Writer`) to the desired offset from the start/end of the file, or from its current position.
+
+The `os.FIle` structure implements this method so that it satisfies all the listed interfaces. It is possible to close the file when the operations are concluded, or to move the current cursor around, depending on what you are trying to achieve.
+
+As we have seen for reading, there are different ways to write files, each one with its own flaws and strengths. In the `ioutil` package, for instance, we have another function called `WriteFile` that allows us to execute the whole operation in one line. This includes opening the file, writing its contents, and then closing it.
+
+An example of writing all a file's content at once is shown in the following code:
+
+```go
+func main() {
+  if len(os.Args) != 3 {
+    fmt.Println("Please specify a path and some content")
+    return
+  }
+  // the second argument, the content, needs to be casted to a byte slice
+  if err := ioutil.WriteFile(os.Args[1], []byte(os.Args[2]), 0644); err != nil {
+    fmt.Println("Error:", err)
+  }
+}
+```
+
+If the size of the content isn't very big and the application is short-lived, it's not a problem if the content gets loaded in memory and written with a single operation. This isn't the best practice for long-lived applications, which are executing reads and writes to many different files. they have to allocate all the content in memory, and that memory will be released by the GC at some point —— this operation is not cost-free, which means that is has disadvantages regarding memory usage and performance.
+
+- Write interface
+
+The same principle that is valid for reading also applies for writing —— there's an interface in the `io` package that determines writing behaviors, as shown in the following code:
+
+```go
+type Writer interface {
+  Write(p []byte) (n int, err error)
+}
+```
+
+We can use a slice of bytes as a buffer to write information piece by piece. In the following example, we will try to combine reading from the previous section with writing, using the `io.Seeker` capabilities to reverse its content before writing it.
+
+```go
+func main() {
+  if len(os.Args) != 3 {
+    fmt.Println("Please specify a source and a destination file")
+    return
+  }
+  src, err := os.Open(os.Args[1])
+  if err != nil {
+    return
+  }
+  defer src.Close()
+  // OpenFile allows to open a file with any permissions
+  dst, err := os.OpenFile(os.Args[2], os.O_WRONLY|os.O_CREATE, 0644)
+  if err != nil {
+    return
+  }
+  defer dst.Close()
+
+  cur, err := src.Seek(0, io.SeekEnd) // Let's go to the end of the file
+  if err != nil {
+    return
+  }
+  b := make([]byte, 16)
+
+  // After moving to the end of the file and defining a byte buffer, we enter a loop
+  // that goes a littile backwards in the file, then reads a section of it.
+  for step, r, w := int64(16), 0, 0; cur != 0; {
+    if cur < step { //ensure cursor is 0 at max
+      b, step = b[:cur], cur
+    }
+    cur = cur - step
+    _, err = src.Seek(cur, io.SeekStart) // go backwards 
+    if err != nil {
+      break
+    }
+    if r, err = src.Read(b); err != nil || r != len(b) {
+      if err == nil { // all buffer should be read
+        err = fmt.Errorf("read: expected %d bytes, got %d", len(b), r)
+      }
+      break
+    }
+    // Then we reverse the content and write it to the destination
+    for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+      switch {
+      case b[i] == '\r' && b[i+1] == '\n':
+        b[i], b[i+1] = b[i+1], b[i]
+      case j != len(b)-1 && b[j-1] == 'r' && b[j] == '\n':
+        b[j], b[j-1] = b[j-1], b[j]
+      }
+      b[i], b[j] = b[j], b[i]  // swap bytes
+    }
+    if w, err = dst.write(b); err != nil || w != len(b) {
+      if err != nil {
+        err = fmt.Errorf("write: expected %d bytes, got %d", len(b), w)
+      }
+    }
+  }
+  if err != nil && err != io.EOF { // we expect an EOF
+    fmt.Println("\n\nError:", err)
+  }
+}
+```
+
+- Buffers and format
+
+In the previous section, we saw the `bytes.Buffer` can be used to store data temporarily and how it handles its own growth by appending the underlying slice. The `fmt` package extensively uses buffers to execute its operations; these aren't the ones in the bytes package for dependency reasons. This approach is inherent to one of the Go's proverbs:
+
+> "A little copy is better than a little dependency."
+
+If you have to import a package to use one function or type, you should consider just copying the necessary code into your own package. If a package contains much more than what you need, copying allows you to reduce the final size of the binary. You can also customize the code and tailor it to your needs.
+
+Another use of buffers is to compose a message before writing it. Let's write some code so that we can use a buffer to format a list of books:
+
+```go
+const grr = "G.R.R. Martin"
+
+type book struct {
+  Author, Title string
+  Year          int
+}
+
+func main() {
+  dst, err := os.OpenFile("book_list.txt", os.O_CREATE|os.O_WRONLY, 0666)
+  if err != nil {
+    return
+  }
+  defer dst.Close()
+  bookList := []book{
+    {Author: grr, Title: "A Game of Thrones", Year: 1996},
+    {Author: grr, Title: "A Clash of Kings", Year: 1998},
+    {Author: grr, Title: "A Storm of Swords", Year: 2000},
+    {Author: grr, Title: "A Feast for Crows", Year: 2005},
+    {Author: grr, Title: "A Dance with Dragons", Year: 2011},
+    // if year is omitted it defaulting to zero value
+    {Author: grr, Title: "The Winds of Winter"},
+    {Author: grr, Title: "A Dream of Spring"},
+  }
+  b := bytes.NewBuffer(make([]byte, 0, 16))
+  for _, v := range bookList {
+    // prints a msg formatted with arguments to writer
+    fmt.Fprintf(b, "%s - %s", v.Title, v.Author)
+    if v.Year > 0 {
+      // we do not print the year if it's not there
+      fmt.Fprintf(b, " (%d)", v.Year)
+    }
+    b.WriteRune('\n')
+    if _, err := b.WriteTo(dst); err != nil { // copies bytes, drains buffer
+      fmt.Println("Error:", err)
+      return
+    }
+  }
+}
+```
+
+- There is a very similar struct in the `strings` package called `Builder` that has the same write methods but some differences, such as the following:
+  - The `String()` method uses the `unsafe` package to convert the bytes into a string, instead of copying them.
+  - It is not permitted to copy a `strings.Builder` and then write to the copy since this causes a `panic`.
 
