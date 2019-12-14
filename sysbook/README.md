@@ -228,7 +228,7 @@ func main() {
 
 ## ch4
 
-- Go offers a series of functions that make it possible to manipulate file paths that are paltform-independent and that are contained mainly in the `path/filepath` and `os` packages.
+- Go offers a series of functions that make it possible to manipulate file paths that are platform-independent and that are contained mainly in the `path/filepath` and `os` packages.
 - An example of the list and count files is shown in the following code:
 
 ```go
@@ -492,4 +492,253 @@ func main() {
 - There is a very similar struct in the `strings` package called `Builder` that has the same write methods but some differences, such as the following:
   - The `String()` method uses the `unsafe` package to convert the bytes into a string, instead of copying them.
   - It is not permitted to copy a `strings.Builder` and then write to the copy since this causes a `panic`.
+
+- Efficient writing
+
+Each time the `os.File` method, that is, `Write`, is executed, this translated to a system call, which is an operation that comes with some overhead. Generally speaking, it's a good idea, to minimize the number of operations by writing more data at once, thus reducing the time that's spent on such calls.
+
+The `buffio.Writer` struct is a writer that wraps another writer, like `os.File`, and executes write operations only when the buffer is full. This makes it possible to execute a forced write with the `Flush` method, which is generally reserved until the end of the writing process. A good pattern of using a buffer would be the following:
+
+```go
+var w io.WriteCloser
+// initialise writer
+defer w.Close()
+b := bufio.NewWriter(w)
+defer b.Flush()
+// write operations
+```
+
+`defer` statements are executed in reverse order before returning the current function, so the first `Flush` ensures that whatever is still on the buffer gets written, and then `Close` actually closes the file.
+
+- Filesystem events
+
+The `golang.org/x/sys` package includes a subpackage dedicated to Unix system events. This has been used to build a feature that is missing from Go's file functionality and can be really useful —— observing a certain path for events on files like creation, deletion, and update.
+
+One famous implementation is as follows:
+
+> `fsnotify`: [github.com/fsnotify/fsnotify](github.com/fsnotify/fsnotify)
+
+Both package expose a function that allows the creation of watchers. Watchers are structures that contain channels that are in charge of delivering file events. They also expose another function that's responsible for terminating/closing the watchers and underlying channels.
+
+## ch5
+
+This chapter deals with streams of data, extending input and output interfaces beyond the filesystem, and how to implement custom readers and writers to serve any purpose.
+
+It also focuses on the missing parts of the input and output utilities that combine them in several different ways, with the goal being to have full control of the incoming and outgoing data.
+
+### Streams
+
+- Input and readers
+
+Writers and readers are not just for files; they are interfaces that abstract flows of data in one direction or another. These flows, often referred to as **streams**, are an essential part of most applications.
+
+Incoming streams of data are considered the `io.Reader` interface if the application has no control over the data flow, and will wait for an error to end the process, receiving the `io.EOF` value in the best case scenario, which is a special error that signals that there is no more content to read, or another error otherwise. The other option is that the reader is also capable of terminating the stream. In this case, the correct representation is the `io.ReadCloser` interface.
+
+The `bytes` package contains a useful structure that treats a slice of bytes as an `io.Reader` interface. There is also `bytes.Buffer`, which adds writing capabilities on top of `bytes.Reader` and makes it possible to access the underlying slice or get the content as a string. The `Buffer.String` method converts bytes to string, and this type of casting in Go is done by making a copy of the bytes, because strings are immutable. This means that eventual changes to the buffer are made after the copy will not propagate to the string.
+
+One of the main advantages of using a string instead of the byte reader, when dealing with strings that need to be read, is the avoidance of copying the data when initializing it. This subtle difference helps with both performance and memory usage because it does fewer allocations and requires the **Garbage Collector** (**GC**) to clean up the copy.
+
+- Defining a reader
+
+Any Go application can define a custom implementation of the `io.Reader` interface. A good general rule when implementing interfaces is to accept interfaces and return concrete types, avoiding unnecessary abstraction.
+
+Let's look at a practical example. We want to implement a custom reader that takes the content from another reader and transforms it into uppercase; we could call this `AngryReader`, for instance:
+
+```go
+func NewAngryReader(r io.Reader) *AngryReader {
+  return &AngryReader{r: r}
+}
+
+type AngryReader struct {
+  r io.Reader
+}
+
+func (a *AngryReader) Read(b []byte) (int, error) {
+  n, err := a.r.Read(b)
+  for r, i, w := rune(0), 0, 0; i < n; i += w {
+    r, w = utf8.DecodeRune(b[i:])
+    if !unicode.IsLetter(r) {
+      continue
+    }
+    ru := unicode.ToUpper(r)
+    if wu := utf8.EncodeRune(b[i:], ru); w != wu {
+      return n, fmt.Errorf("%c->%c, size mismatch %d->%d", r, ru, w, wu)
+    }
+  }
+  return n, err
+}
+
+func main() {
+  a := NewAngryReader(strings.NewReader("Hello, playground!"))
+  b, err := ioutil.ReadAll(a)
+  if err != nil {
+    log.Fatalln(err)
+  }
+  log.Println(string(b))
+}
+```
+
+- The bytes writer
+
+`bytes.Buffer` is a very flexible structure considering that it works for both, `Writer` and `ByteWriter` works best if reused, thanks to the `Reset` and `Truncate` methods. Instead of leaving a used buffer to be recycled by the **GC** and make a new buffer, it is better to reset the existing one, keeping the underlying array for the buffer and setting the slice length to `0`.
+
+A buffer is not made for composing string values. For this reason, when the `String` method is called, bytes get converted into strings, which are immutable, unlike slices. The new string created this way is made with a copy of the current slice, and changes to the slice do not touch the string. It's neither a limit nor a feature; it is an attribute that can lead to errors if used incorrectly. Here's an example of the effect of resetting a buffer and using the `String` method:
+
+```go
+func main() {
+  b := bytes.NewBuffer(nil)
+  b.WriteString("One")
+  s1 := b.String()
+  b.WriteString("Two")
+  s2 := b.String()
+  b.Reset()
+  b.WriteString("Hey!")  // does not change s1 or s2
+  s3 := b.String()
+  fmt.Println(s1, s2, s3) // prints "One OneTwo Hey!"
+}
+```
+
+- The string writer
+
+A byte buffer executes a copy of the bytes in order to produce a string. This is why, in version 1.10, `strings.Builder` made its debut. It shares all the write-related methods of a buffer and does not allow access to the underlying slice via the `Bytes` method. The only way of obtaining the final string is with the `String` method, which uses the `unsafe` package under the hood to convert the slice to a string without copying the underlying data.
+
+The main consequence of this is that this struct strongly discourages copying —— that's because the underlying slice of the copied slice points to the same array, and writing in the copy would influence the other one. The resulting operation would panic:
+
+```go
+func main() {
+  b := strings.Builder{}
+  b.WriteString("One")
+  c := b
+  c.WriteString("Hey!")  // panic: strings: illegal use of non-zero Builder copied by value
+}
+```
+
+- Defining a writer
+
+Any custom implementation of any writer can be defined in the application. A very common case is a decorator, which is a writer that wraps another writer and alters or extends what the original writer does. As for the reader, it is a good habit to have a constructor that accepts another writer and possibly wraps it in order to make it compatible with a lot of the standard library structures, such as the following:
+
+> `*os.File`
+> `*bytes.Buffer`
+> `*strings.Builder`  
+
+Let's get a real-world use case —— we want to produce some texts with scrambled letters in each word to test when it starts to become unreadable by a human. We will create a configurable writer that will scramble the letters before writing it to the destination writer and we will create a binary that accepts a file and creates its scrambled version. We will use the `math/rand` package to randomize the scrambling.
+
+```go
+// Let's define our struct and its constructor. This will accept another writer,
+// a random number generator, and a scrambling chance:
+type ScrambleWriter struct {
+  w io.Writer
+  r *rand.Rand
+  c float64
+}
+
+func NewScrambleWriter(w io.Writer, r *rand.Rand, chance float64) *ScrambleWriter {
+  return &ScrambleWriter{w: w, r: r, c: chance}
+}
+
+func (s *ScrambleWriter) shambleWrite(runes []rune, sep rune) (n int, err error) {
+  // scramble after first letter
+  for i := 1; i < len(runes)-1; i++ {
+    if s.r.Float64() > s.c {
+      continue
+    }
+    j := s.r.Intn(len(runes)-1) + 1
+    runes[i], runes[j] = runes[j], runes[i]
+  }
+  if sep != 0 {
+    runes = append(runes, sep)
+  }
+  var b = make([]byte, 10)
+  for _, r := range runes {
+    v, err := s.w.Write(b[:utf8.EncodeRune(b, r)])
+    if err != nil {
+      return n, err
+    }
+    n += v
+  }
+  return
+}
+
+// The Write method needs to execute the bytes without letters as they are,
+// and scramble the sequence of letters. It will iterate the runes, using the
+// `utf8.DecodeRune` function we saw earlier, print whatever is not a letter,
+// and stack all the sequences of letters it can find:
+
+// When the sequence is over, it will be handled by the `shambleWrite` method,
+// which will effectively execute a shamble and write the shamble runes:
+func (s *ScrambleWriter) Write(b []byte) (n int, err error) {
+  var runes = make([]rune, 0, 10)
+  for r, i, w := rune(0), 0, 0; i < len(b); i += w {
+    r, w = utf8.DecodeRune(b[i:])
+    if unicode.IsLetter(r) {
+      runes = append(runes, r)
+      continue
+    }
+    v, err := s.shambleWrite(runes, r)
+    if err != nil {
+      return n, err
+    }
+    n += v
+    runes = runes[:0]
+  }
+  if len(runes) != 0 {
+    v, err := s.shambleWrite(runes, 0)
+    if err != nil {
+      return n, err
+    }
+    n += v
+  }
+  return
+}
+
+func main() {
+  var s strings.Builder
+  w := NewScrambleWriter(&s, rand.New(rand.NewSource(1)), 0.5)
+  fmt.Fprint(w, "Hello! this is a sample text.\nCan you read it? Yes")
+  fmt.Println(s.String())
+}
+```
+
+### Built-in utilities
+
+- Copying from one stream to another
+
+There are three main functions in the `io` package that make it possible to transfer data from a writer to a reader.
+    > - `io.Copy`
+    > - `io.WriterTo`
+    > - `io.CopyN`
+
+- Connected readers and writers
+
+The `io.Pipe` function creates a pair of readers and writers that are connected. This means that whatever is sent to the writer will be received from the reader. Write operations are blocked if there is still data that is hanging from the last one; only when the reader has finished consuming what has been sent with the new operation be concluded.
+
+This is not an important tool for non-concurrent applications, which are more likely to use concurrent tools such as channels, but when the reader and writer are executing on different goroutines, this can be an excellent mechanism for synchronization, as in the following program:
+
+```go
+func main() {
+  pr, pw := io.Pipe()
+  go func(w io.WriteCloser) {
+    for _, s := range []string{"a string", "another string", "last one"} {
+      fmt.Printf("-> writing %q\n", s)
+      fmt.Fprint(w, s)
+    }
+    w.Close()
+  }(pw)
+  var err error
+  for n, b := 0, make([]byte, 100); err == nil; {
+    fmt.Println("<- waiting...")
+    n, err = pr.Read(b)
+    if err == nil {
+      fmt.Printf("<- received %q\n", string(b[:n]))
+    }
+  }
+  if err != nil && err != io.EOF {
+    fmt.Println("error:", err)
+  }
+}
+```
+
+- Extending readers
+
+When it comes to incoming streams, there are a lot of functions available in the standard library to improve the capabilities of readers. One of the easiest examples is `ioutil.NopCloser`, which takes a reader and returns `io.ReadCloser`, which does nothing. This is useful if a function is in charge of releasing a resource, but the reader used is not `io.Closer` (like in `bytes.Buffer`).
 
