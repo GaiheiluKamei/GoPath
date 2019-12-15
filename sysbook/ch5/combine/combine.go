@@ -15,6 +15,7 @@ type queryWriter struct {
 	io.Writer
 }
 
+// We are creating a writer that will print the rows with a match and highlight the text:
 func (q queryWriter) Write(b []byte) (n int, err error) {
 	lines := bytes.Split(b, []byte{'\n'})
 	l := len(q.Query)
@@ -41,6 +42,8 @@ func (q queryWriter) Write(b []byte) (n int, err error) {
 	return len(b), nil
 }
 
+// This will be used with `TeeReader` with an open file, so that reading the file
+// will write to `queryWriter`.
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Println("Please specify a path and a search string.")
