@@ -742,3 +742,115 @@ func main() {
 
 When it comes to incoming streams, there are a lot of functions available in the standard library to improve the capabilities of readers. One of the easiest examples is `ioutil.NopCloser`, which takes a reader and returns `io.ReadCloser`, which does nothing. This is useful if a function is in charge of releasing a resource, but the reader used is not `io.Closer` (like in `bytes.Buffer`).
 
+One reader and one writer can be connected so that whatever comes from the reader is copied to the writer —— the opposite of what happens with `io.Pipe`. This is done via `io.TeeReader`.
+
+Let's try to use it to create a writer that acts as a search engine in the filesystem, printing only the rows with a match to the query requested. We want a program that does the following:
+
+> - Reads a directory path and a string to search from the arguments  
+> - Gets a list of files in the selected path  
+> - Reads each file and passes the lines that contain the selected string to another writer  
+> - This other writer will inject color characters to highlight the string and copy its content to the standard output  
+
+Let's start with color injection. In a Unix shell, colored output is obtained with the following sequence:  
+> `\xbb1`: An escape character  
+> `[`: An opening bracket  
+> `39`: A number  
+> `m`: the letter *m*  
+
+The number determines both the background and foreground color. For this example, we'll use `31`(red) and `39`(default).
+
+```go
+type queryWriter struct {
+  Query []byte
+  io.Writer
+}
+
+// We are creating a writer that will print the rows with a match and highlight the text:
+func (q queryWriter) Write(b []byte) (n int, err error) {
+  lines := bytes.Split(b, []byte{'\n'})
+  l := len(q.Query)
+  for _, b := range lines {
+    i := bytes.Index(b, q.Query)
+    if i == -1 {
+      continue
+    }
+    for _, s := range [][]byte{
+      b[:i],              // what's before the match
+      []byte("\x1b[31m"), // star red color
+      b[i : i+l],         // match
+      []byte("\x1b[39m"), // default color
+      b[i+l:],            // whatever is left
+    } {
+      v, err := q.Writer.Write(s)
+      n += v
+      if err != nil {
+        return 0, err
+      }
+    }
+    fmt.Fprintln(q.Writer)
+  }
+  return len(b), nil
+}
+
+// This will be used with `TeeReader` with an open file, so that reading the file
+// will write to `queryWriter`.
+func main() {
+  if len(os.Args) < 3 {
+    fmt.Println("Please specify a path and a search string.")
+    return
+  }
+  root, err := filepath.Abs(os.Args[1]) // get absolute path
+  if err != nil {
+    fmt.Println("Cannot get absolute path:", err)
+    return
+  }
+  query := []byte(strings.Join(os.Args[2:], " "))
+  fmt.Printf("Searching for %q in %s...\n", query, root)
+  err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+    if info.IsDir() {
+      return nil
+    }
+    fmt.Println(path)
+    f, err := os.Open(path)
+    if err != nil {
+      return err
+    }
+    defer f.Close()
+
+    _, err = ioutil.ReadAll(io.TeeReader(f, queryWriter{Query: query, Writer: os.Stdout}))
+    return err
+  })
+  if err != nil {
+    fmt.Println(err)
+  }
+}
+```
+
+- Writers and decorators
+
+There are a plethora of tools to enhance, decorate, and use for readers, but the same thing does not apply to writers.
+
+There is also the `io.WriteString` function, which prevents unnecessary conversions from strings to bytes. First, it checks whether the writer supports string writing, attempting a cast to `io.stringWriter`, an unexported interface with just the `WriteString` method, the writes the string if successful, or converts it into bytes otherwise.
+
+There is the `io.MultiWriter` function, which creates a writer that replicates the information to a series of other writers, which it receives upon creation. A practical example is writing some content while showing it on the standard output, as in the following example:
+
+```go
+func main() {
+  r := strings.NewReader("let's read this message\n")
+  b := bytes.NewBuffer(nil)
+  w := io.MultiWriter(b, os.Stdout)
+  io.Copy(w, r)
+  fmt.Println(b.String())
+}
+```
+
+There is also a useful variable, `ioutil.Discard`, which is a writer that writes to `/dev/null`, a null device. This means that writing to this variable ignores the data.
+
+### Summary
+
+In this chapter, we introduced the concept of streams for describing incoming and outgoing flows of data. We saw that the reader interface represents the data received, which the writer is the sent data.
+
+We discovered that files are also writers if opened correctly and that there are several writers in the standard package, including the byte buffer and the string builder.
+
+## ch6
+
