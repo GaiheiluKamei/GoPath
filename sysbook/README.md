@@ -854,3 +854,15 @@ We discovered that files are also writers if opened correctly and that there are
 
 ## ch6
 
+### Understanding pseudo-terminals
+
+Pseudo-terminals, or pseudo teletypes, are applications that run under a Terminal or teletype and emulate its behavior. It's a very convenient way of creating interactive software that is capable of running inside a Terminal without any graphical interface. this is because it uses the Terminal itself to emulate one.
+
+Text-only consoles used as a main interface for operating systems inherit their name from TTY and are referred to as consoles. Even if the OS runs a graphical environment like on a modern OS, a user can always access a certain number of virtual consoles that work as a **Command-Line Interface** (**CLI**), ofter referred to as a shell.
+
+Many applications are designed to work inside a shell, but some of them are mimicking the shell's behavior. Graphical interfaces have a Terminal emulator that is designed for executing shells. These types of applications are called **pseudo-teletypes** (**PTY**).
+
+### Creating a basic PTY
+
+We'll start with a simple version of pseudo-terminal by creating an input manager, then by creating a command selector, and finally by creating the command execution.
+
