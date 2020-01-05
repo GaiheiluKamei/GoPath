@@ -46,8 +46,7 @@ func init() {
 			Action: func(w io.Writer, args ...string) bool {
 				fmt.Fprintln(w, "Available Commands:")
 				for _, c := range cmds {
-					// "-15" in "%-15s" means the distance with right characters is 15 spaces.
-					// if want keep space from left character, should be "%15s"
+					// "%-15s": "-" represent align left, "15" represent the length of character.
 					fmt.Fprintf(w, " - %-15s %s\n", c.Name, c.Help)
 				}
 				return false
