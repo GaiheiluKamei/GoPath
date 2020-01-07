@@ -98,6 +98,8 @@ func (a *argsScanner) Reset() {
 	*a = (*a)[0:0]
 }
 
+// This custom slice will allow us to receive lines with quotes and new lines between quotes
+// by changing how the look works.
 func (a *argsScanner) Parse(r io.Reader) (extra string) {
 	s := bufio.NewScanner(r)
 	s.Split(ScanArgs)
@@ -119,7 +121,20 @@ func isQuote(r rune) bool {
 	return r == '"' || r == '\''
 }
 
+/*
+ScanArgs is a custom split function that behaves like `bufio.ScanWords` apart from the
+fact that it's aware of quotes.
+
+The function has a first block that skips spaces and finds the first non-space character;
+if that character is a quote, it is skipped. Then it looks for the first character that
+terminates the arguments, which is a space for normal arguments, and the respective quote
+for the other arguments.
+
+If the end of file is reached while in a quoted context, the partial string is returned;
+otherwise, the quote is not skipped and more data is requested.
+*/
 func ScanArgs(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	// first space
 	start, first := 0, rune(0)
 	for width := 0; start < len(data); start += width {
 		first, width = utf8.DecodeRune(data[start:])
@@ -127,9 +142,11 @@ func ScanArgs(data []byte, atEOF bool) (advance int, token []byte, err error) {
 			break
 		}
 	}
+	// skip quote
 	if isQuote(first) {
 		start++
 	}
+	// loop until arg end character
 	for width, i := 0, start; i < len(data); i += width {
 		var r rune
 		r, width = utf8.DecodeRune(data[i:])
@@ -138,6 +155,7 @@ func ScanArgs(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		}
 	}
 
+	// token from EOF
 	if atEOF && len(data) > start {
 		if isQuote(first) {
 			start--
@@ -178,6 +196,7 @@ func main() {
 	b := bytes.Buffer{}
 	fmt.Fprint(w, "** Welcome to pseudoTerm! **\nPlease enter a command.\n")
 	for {
+		// prompt message
 		pwd, err := os.Getwd()
 		if err != nil {
 			fmt.Println("Cannot get working directory:", err)
@@ -196,7 +215,7 @@ func main() {
 			}
 			b.WriteString(extra)
 		}
-
+		// a contains the split arguments
 		idx := -1
 		for i := range cmds {
 			if !cmds[i].Match(a[0]) {
