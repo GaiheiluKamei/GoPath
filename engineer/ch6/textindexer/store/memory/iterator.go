@@ -18,7 +18,7 @@ type bleveIterator struct {
 }
 
 // CLose the iterator and release any allocated resources.
-func (it *bleveIterator) CLose() error {
+func (it *bleveIterator) Close() error {
 	it.idx = nil
 	it.searchReq = nil
 	if it.rs != nil {
